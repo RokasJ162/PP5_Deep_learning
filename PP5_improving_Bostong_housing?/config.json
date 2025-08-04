@@ -1,0 +1,11 @@
+{
+  "model_config": {
+    "num_neurons": [16],
+    "optimizer": "adam",
+    "epochs": 100
+  },
+  "evaluation_config": {
+    "k_folds": 4,
+    "last_n_epochs_for_mae": 10
+  }
+}

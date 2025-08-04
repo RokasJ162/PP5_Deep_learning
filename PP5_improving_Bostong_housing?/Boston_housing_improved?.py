@@ -1,0 +1,144 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from keras.datasets import boston_housing
+from keras import models, layers, Input
+import json
+
+# Loading configuration from JSON File
+try:
+    with open('config.json', 'r') as f:
+        config = json.load(f)
+    print("Configuration loaded successfully from config.json")
+except FileNotFoundError:
+    print("Error: config.json not found.")
+
+num_epochs = config['model_config']['epochs']
+neuron_counts_to_test = config['model_config']['num_neurons']
+k = config['evaluation_config']['k_folds']
+last_n_epochs_for_mae = config['evaluation_config']['last_n_epochs_for_mae']
+
+# 1. Loading and standardizing data
+# 1.1. Load the Boston Housing dataset
+(train_data, train_targets), (test_data, test_targets) = boston_housing.load_data()
+
+# 1.2.Standardize the training and test data
+mean = train_data.mean(axis=0)
+train_data -= mean
+std = train_data.std(axis=0)
+train_data /= std
+test_data -= mean
+test_data /= std
+
+
+# 2. Creating a function with the most suitable number of neurons
+# 2.1. Building a function
+def build_model(num_neurons):
+    # Using the Functional API method since it is more understandable for begginers
+    inputs = Input(shape=(train_data.shape[1],))
+    x = layers.Dense(num_neurons, activation='relu')(inputs)
+    x = layers.Dense(num_neurons, activation='relu')(x)
+    outputs = layers.Dense(1)(x)
+    model = models.Model(inputs=inputs, outputs=outputs)
+    model.compile(optimizer=config['model_config']['optimizer'], loss='mse', metrics=['mae'])
+    return model
+
+
+# 3. Setting up k-fold x validation and hyperparameters
+# 3.1. K-fold x validation
+num_val_samples = len(train_data) // config['evaluation_config']['k_folds']
+all_avg_maes = {}
+all_mae_histories = {}
+
+# 4. K-fold x validation, neuron count test, model build, MAE calculation
+for num_neurons in neuron_counts_to_test:
+    print(f"Processing models with {num_neurons} neurons")
+    mae_per_fold = []
+
+    # 4.1 K-fold x validation for i neuron count
+    for i in range(k):
+        print(f'  - Processing fold # {i}')
+
+        # 4.2 Preparing the data
+        val_data = train_data[i * num_val_samples: (i + 1) * num_val_samples]
+        val_targets = train_targets[i * num_val_samples: (i + 1) * num_val_samples]
+        partial_train_data = np.concatenate([train_data[:i * num_val_samples], train_data[(i + 1) * num_val_samples:]], axis=0)
+        partial_train_targets = np.concatenate([train_targets[:i * num_val_samples], train_targets[(i + 1) * num_val_samples:]], axis=0)
+
+        # 4.3. Building a model
+        model = build_model(num_neurons)
+        history = model.fit(
+            partial_train_data, partial_train_targets,
+            validation_data=(val_data, val_targets),
+            epochs=num_epochs,
+            batch_size=1,
+            verbose=0
+        )
+
+        mae_history = history.history['val_mae']
+        mae_per_fold.append(mae_history)
+
+    # 4.4. Calculating MAE
+    average_mae_history = [np.mean([x[i] for x in mae_per_fold]) for i in range(num_epochs)]
+    all_mae_histories[num_neurons] = average_mae_history
+
+    # 4.5. Logging average MAE for i neurons
+    avg_mae_score = np.mean(average_mae_history[-last_n_epochs_for_mae:])
+    all_avg_maes[num_neurons] = avg_mae_score
+    print(f"  -> Average MAE for {num_neurons} neurons: {avg_mae_score:.2f}")
+
+# 5. Ploting the results
+best_neurons = min(all_avg_maes, key=all_avg_maes.get)
+best_mae = all_avg_maes[best_neurons]
+
+print("\n--- Summary of Results ---")
+for neurons, mae in all_avg_maes.items():
+    print(f"Neurons: {neurons}, Average MAE: {mae:.2f}")
+print(f"\nOptimal number of neurons: {best_neurons} (Average MAE: {best_mae:.2f})")
+
+plt.figure(figsize=(10, 6))
+for num_neurons, history in all_mae_histories.items():
+    plt.plot(range(1, len(history) + 1), history, label=f'{num_neurons} neurons')
+
+plt.xlabel('Epochs')
+plt.ylabel('Validation MAE')
+plt.title('Average K-Fold Validation MAE vs. Number of Neurons')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# 6. Evaluation
+print("\nFinal evaluation with test data")
+try:
+    final_model = build_model(best_neurons)
+    final_model.fit(train_data, train_targets, epochs=num_epochs, batch_size=1, verbose=0)
+    test_loss, test_mae = final_model.evaluate(test_data, test_targets, verbose=0)
+    print(f"Final model trained on all data (with {best_neurons} neurons) has a Test MAE of: {test_mae:.2f}")
+except Exception as e:
+    print(f"Error during final evaluation on test data: {e}")
+else:
+    print("\nNo successful model configurations were found to analyze.")
+
+# Results with adam optimizer:
+# Neurons: 16, Average MAE: 4.89
+# Neurons: 32, Average MAE: 6.25
+# Neurons: 64, Average MAE: 11.57
+# Neurons: 128, Average MAE: 14.97
+# Optimal number of neurons: 16 (Average MAE: 4.89)
+
+# Results with rmsprop opimizer:
+# Neurons: 16, Average MAE: 5.38
+# Neurons: 32, Average MAE: 5.58
+# Neurons: 64, Average MAE: 8.76
+# Neurons: 128, Average MAE: 11.35
+#
+# Optimal number of neurons: 16 (Average MAE: 5.38)
+
+# Evaluation results:
+# Neurons: 16, Average MAE: 4.83
+
+# In this program I have automated the tuning process by including a function that determines the optimal neuron count.
+# During the tuning I have came to the conclusion that 'adam' optimizer is far more suitable for this kind of problem.
+# It is worth mentioning that Keras functional API was updated due to the fact that 'input_shape' argument is expected to be deprecated in the future.
+
+
+
